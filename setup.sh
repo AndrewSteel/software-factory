@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Richtet die Software Factory auf einem frischen Ubuntu-Server ein (getestet: Ubuntu 24.04).
 # Aufruf als root im Repo-Ordner:  ./setup.sh
+# Andere Config-Vorlage (nur beim ersten Lauf):  FACTORY_CONFIG_TEMPLATE=factory.config.alice.example.json ./setup.sh
 # Mehrfach ausführen ist ok: bereits installierte Teile werden übersprungen.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -38,11 +39,16 @@ fi
 if [ ! -x /root/.bun/bin/bun ]; then
   say "Bun installieren"
   curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1
+elif /root/.bun/bin/bun --version | grep -qE '^(0\.|1\.[0-3]\.)'; then
+  # Der Docker-Wächter braucht halboffene Verbindungen (docker exec/attach), die Bun erst ab 1.4 kann
+  say "Bun aktualisieren ($(/root/.bun/bin/bun --version))"
+  /root/.bun/bin/bun upgrade >/dev/null 2>&1 || echo "  Bun-Update fehlgeschlagen, bitte von Hand: bun upgrade"
 fi
 
 say "Konfiguration unter $CONF_DIR"
 install -d -m 700 "$CONF_DIR"
-[ -f "$CONF_DIR/config.json" ] || { cp factory.config.example.json "$CONF_DIR/config.json"; echo "  Vorlage angelegt: $CONF_DIR/config.json (bitte anpassen)"; }
+TEMPLATE="${FACTORY_CONFIG_TEMPLATE:-factory.config.example.json}"
+[ -f "$CONF_DIR/config.json" ] || { cp "$TEMPLATE" "$CONF_DIR/config.json"; chmod 600 "$CONF_DIR/config.json"; echo "  Vorlage angelegt: $CONF_DIR/config.json aus $TEMPLATE (bitte anpassen)"; }
 [ -f "$CONF_DIR/secrets.env" ] || { touch "$CONF_DIR/secrets.env"; chmod 600 "$CONF_DIR/secrets.env"; }
 install -d /var/lib/software-factory/jobs
 # Vorschau: Server-IP und zufälliges Passwort eintragen, falls noch "AUTO"

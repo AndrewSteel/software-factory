@@ -46,6 +46,8 @@ Eigener Docker-Container pro Issue
 - **Playbook** (`playbooks/factory.md`): die festen Regeln für jeden Lauf. Stages melden, bei Unklarheit fragen statt raten, Pflicht-Checks, nie selbst mergen.
 - **Workflow** (`workflows/starter-kit/`): wie entwickelt wird. Standard ist der Workflow aus dem [AI Coding Starter Kit](https://github.com/AlexPEClub/ai-coding-starter-kit): `architecture → build → qa` auf Basis deiner Spec, mit getrennten Dateien pro Feature (`spec.md`, `design.md`, `qa-report.md`). Austauschbar, siehe [workflow.md](workflows/starter-kit/workflow.md).
 - **Stack-Packs** (`workflows/starter-kit/stacks/`): Regeln für einen bestimmten Stack (z. B. `nextjs`, `supabase`). Welche gelten, steht in `docs/stack.md` des Projekts. Die Factory ist stack-unabhängig.
+- **Workflow `alice`** (`workflows/alice/`): für Projekte mit Docker-Diensten, n8n, PostgreSQL/Redis/Weaviate und statischem Next.js auf dem eigenen Server. Flache Specs (`features/PROJ-X-<name>.md`), Stack-Packs `docker-services`, `postgres`, `redis`, `weaviate`, `n8n`, `nextjs-static`. Einrichtung: [docs/ki-lan-setup.md](docs/ki-lan-setup.md).
+- **Docker-Wächter** (`runner/docker-guard.ts`, optional über `docker` in der Config): Bau und Abnahme bekommen Docker (Docker-out-of-Docker), sehen aber nur, was sie selbst angelegt haben. Produktive Container auf demselben Server bleiben unerreichbar. Details: [docs/ki-lan-setup.md](docs/ki-lan-setup.md#was-der-docker-wächter-erlaubt-und-sperrt).
 - **Lokale Skills** (`local-skills/`): `init` (Projekt aufsetzen inkl. Stack), `write-spec` (Spec im Interview erarbeiten), `to-factory` (an die Factory übergeben). Einmal pro Rechner installieren: `./scripts/install-local-skills.sh`.
 - **Projekt-Vorlage**: [factory-template](https://github.com/AlexPEClub/factory-template), stack-unabhängig. Neues Projekt: `./scripts/new-project.sh mein-projekt`.
 
@@ -114,12 +116,12 @@ Die Factory startet die **unveränderte, offizielle Claude Code CLI** auf deinem
 
 - Jeder Lauf hat einen eigenen Container mit Speicher- und Prozesslimit. Standard: zwei Agent-Läufe gleichzeitig (`maxParallel: 2`), passend zu 8 GB RAM.
 - Antworten und Änderungswünsche nimmt die Factory nur von dir an (plus `allowedUsers`). Fremde Kommentare sieht der Agent nicht.
-- Ein Bau zählt nur, wenn `factory-verify` auf genau dem gepushten Commit grün ist und die Spec unverändert bleibt. Besteht die Abnahme nach zwei Runden nicht, landet der PR mit „Abnahme nicht bestanden“ bei dir, nie als bestanden.
+- Ein Bau zählt nur, wenn `factory-verify` auf genau dem gepushten Commit grün ist (inklusive des festen Zugangsdaten-Scans `secrets`) und die Spec unverändert bleibt. Vor jedem Push prüft ein Git-Hook die Commits auf `.env`-Dateien, Schlüssel und Tokens. Besteht die Abnahme nach zwei Runden nicht, landet der PR mit „Abnahme nicht bestanden“ bei dir, nie als bestanden.
 - Vorschauen laufen ohne Zugangsdaten, mit Passwort und mit Domain über HTTPS.
 - Die Agents arbeiten mit deinem GitHub-Login. Für mehr Trennung: eigener GitHub-Account für die Factory oder ein Fine-grained Token, der nur deine Factory-Repos erreicht.
 - Getestet: Ubuntu 24.04 auf Hostinger KVM 2, Next.js-Projekte. Weitere Stacks sind vorgesehen, aber noch nicht erprobt.
 
-Tests für den Runner: `node --test runner/main.test.ts` (Node 22.6+, ohne GitHub und Docker).
+Tests für den Runner: `node --test runner/main.test.ts runner/docker-guard.test.ts` (Node 22.6+, ohne GitHub und Docker).
 
 ## Lizenz
 

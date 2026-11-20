@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildPrompt, caddyConfig, humanCommentsSinceFactory, lastFactoryMarker, readJobFile, redact,
-  reworksSinceApproval, setFactoryLogin, writeJobFile, type Config,
+  reworksSinceApproval, setFactoryLogin, writeJobFile, specPaths, isSecretFile, protectedHit, type Config,
 } from "./main.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "sf-test-"));
@@ -111,15 +111,26 @@ test("Caddy: mit Domain HTTPS, ohne Domain nur HTTP", () => {
 // ---------- factory-verify ----------
 
 const VERIFY = join(import.meta.dirname, "..", "image", "bin", "factory-verify");
-function verifyRepo(setup: string | null) {
+// Stub für gitleaks (im Job-Image echt installiert)
+const STUBS = tmp();
+writeFileSync(join(STUBS, "gitleaks"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+const SCAN = join(import.meta.dirname, "..", "image", "bin", "factory-secret-scan");
+function verifyRepo(setup: string | null, files: Record<string, string> = {}, env: Record<string, string> = {}) {
   const work = tmp();
   const repo = join(work, "repo");
   mkdirSync(join(repo, ".factory"), { recursive: true });
   if (setup !== null) writeFileSync(join(repo, ".factory", "setup.json"), setup);
   const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "ignore" });
-  git("init", "-q"); git("add", "-A");
+  git("init", "-q");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "basis", "--allow-empty");
+  git("tag", "basis");
+  for (const [f, content] of Object.entries(files)) { mkdirSync(join(repo, f, ".."), { recursive: true }); writeFileSync(join(repo, f), content); }
+  git("add", "-A");
   git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init", "--allow-empty");
-  const r = spawnSync("bash", [VERIFY], { env: { ...process.env, FACTORY_WORK: work }, encoding: "utf8" });
+  const r = spawnSync("bash", [VERIFY], {
+    env: { ...process.env, FACTORY_WORK: work, FACTORY_SCAN_BASE: "basis", FACTORY_SECRET_SCAN: SCAN, PATH: `${STUBS}:${process.env.PATH}`, ...env },
+    encoding: "utf8",
+  });
   let verify: any = null;
   try { verify = JSON.parse(readFileSync(join(work, "verify.json"), "utf8")); } catch {}
   return { code: r.status, verify };
@@ -137,10 +148,28 @@ test("factory-verify: grün nur, wenn alle Checks bestehen", () => {
   const ok = verifyRepo('{"checks": {"lint": "true", "test": "echo ok"}}');
   assert.equal(ok.code, 0);
   assert.equal(ok.verify.ok, true);
-  assert.equal(ok.verify.results.length, 2);
+  assert.equal(ok.verify.results.length, 3);
+  assert.equal(ok.verify.results[0].name, "secrets");
   const bad = verifyRepo('{"checks": {"lint": "true", "test": "exit 3"}}');
   assert.equal(bad.code, 1);
   assert.equal(bad.verify.ok, false);
+});
+
+test("factory-verify: rot bei .env-Dateien, Passwörtern oder Tokens in Commits, Wegwerfwerte und Vorlagen sind erlaubt", () => {
+  const setup = '{"checks": {"test": "true"}}';
+  assert.equal(verifyRepo(setup, { "docker/compose/automations/alice-lists/.env.example": "PGPASSWORD=changeme" }).code, 0);
+  const env = verifyRepo(setup, { "docker/compose/automations/alice-lists/.env": "PGPASSWORD=echt" });
+  assert.equal(env.code, 1);
+  assert.match(env.verify.results[0].tail, /alice-lists\/\.env/);
+  assert.equal(verifyRepo(setup, { "docker/test/compose.test.yml": "POSTGRES_PASSWORD: test\nDSN: postgresql://alice:test@test-postgres/alice\nREDIS_PASSWORD: ${REDIS_PASSWORD}\n" }).code, 0);
+  const pw = verifyRepo(setup, { "docker/test/compose.test.yml": "PGPASSWORD: Sup3rGeheim2026\n" });
+  assert.equal(pw.code, 1);
+  assert.ok(!JSON.stringify(pw.verify).includes("Sup3rGeheim2026"), "Passwort darf nicht im Ergebnis stehen");
+  assert.equal(verifyRepo(setup, { "app/db.py": 'DSN = "postgresql://alice:Xk92mZp7Qw4L@ki.lan:5432/alice"\n' }).code, 1);
+  const token = "ghp_" + "x".repeat(36);
+  const leak = verifyRepo(setup, { "debug.txt": `token ${token}` }, { GH_TOKEN: token });
+  assert.equal(leak.code, 1);
+  assert.ok(!JSON.stringify(leak.verify).includes(token), "Token darf nicht im Ergebnis stehen");
 });
 
 // ---------- Auswertung eines beendeten Laufs (GitHub und Docker simuliert) ----------
@@ -150,6 +179,7 @@ import { finish } from "./main.ts";
 type Call = { cmd: string[]; stdin: string };
 const calls: Call[] = [];
 let headSha = "abc1234";
+let prFiles = "src/app/page.tsx\n";
 (globalThis as any).Bun = {
   spawn(cmd: string[], opts: any) {
     const call: Call = { cmd, stdin: "" };
@@ -157,7 +187,7 @@ let headSha = "abc1234";
     let out = "";
     if (cmd[0] === "gh" && cmd[1] === "issue" && cmd[2] === "view") out = JSON.stringify(issue([]));
     if (cmd[0] === "gh" && cmd[1] === "api" && String(cmd[2]).includes("/git/ref/heads/")) out = headSha + "\n";
-    if (cmd[0] === "gh" && cmd[1] === "pr" && cmd[2] === "diff") out = "src/app/page.tsx\n";
+    if (cmd[0] === "gh" && cmd[1] === "pr" && cmd[2] === "diff") out = prFiles;
     return {
       stdout: new Blob([out]).stream(), stderr: new Blob([""]).stream(), kill() {},
       exited: (async () => { if (opts.stdin instanceof Blob) call.stdin = await opts.stdin.text(); return 0; })(),
@@ -165,8 +195,8 @@ let headSha = "abc1234";
   },
 };
 
-async function finishRun(phase: "check" | "build" | "accept", files: Record<string, string>, exitCode = 0, reason?: string) {
-  const config = cfg();
+async function finishRun(phase: "check" | "build" | "accept", files: Record<string, string>, exitCode = 0, reason?: string, extra: Partial<Config> = {}) {
+  const config = cfg(extra);
   const dir = join(config.dataDir, "jobs", "a__b__7");
   mkdirSync(dir, { recursive: true });
   for (const [f, content] of Object.entries(files)) writeFileSync(join(dir, f), content);
@@ -191,8 +221,49 @@ test("Bau mit grünen Checks auf einem älteren Commit gilt nicht als gebaut", a
   assert.equal(r.metric.status, "failed");
 });
 
-test("Bau mit grünen Checks auf dem gepushten Commit geht in die Abnahme", async () => {
+const greenVerify = () => JSON.stringify({ sha: headSha, ok: true, results: [{ name: "secrets", exit: 0 }, { name: "lint", exit: 0 }] });
+
+test("Bau ohne Zugangsdaten-Scan gilt nicht als gebaut", async () => {
   const verify = JSON.stringify({ sha: headSha, ok: true, results: [{ name: "lint", exit: 0 }] });
+  const r = await finishRun("build", { "status.json": '{"status":"accepting","pr":"https://x/pull/1"}', "verify.json": verify, "claude.jsonl": result() });
+  assert.equal(r.metric.status, "failed");
+  assert.ok(r.failedComment.includes("Zugangsdaten-Scan"));
+});
+
+test("PR mit .env-Datei oder geänderter Spec gilt nicht als gebaut", async () => {
+  for (const [files, text] of [["docker/compose/automations/n8n/.env\n", ".env"], ["features/PROJ-7-x/spec.md\n", "Spec"]]) {
+    prFiles = files;
+    const r = await finishRun("build", { "status.json": '{"status":"accepting","pr":"https://x/pull/1"}', "verify.json": greenVerify(), "claude.jsonl": result() });
+    assert.equal(r.metric.status, "failed");
+    assert.ok(r.failedComment.includes(text), r.failedComment);
+  }
+  prFiles = "src/app/page.tsx\n";
+});
+
+test("PR, der eine geschützte Datei ändert, gilt nicht als gebaut", async () => {
+  const extra = { protectedPaths: [".factory/setup.json", "scripts/lib/"] };
+  for (const f of [".factory/setup.json", "scripts/lib/compose_service.py"]) {
+    prFiles = `src/x.py\n${f}\n`;
+    const r = await finishRun("build", { "status.json": '{"status":"accepting","pr":"https://x/pull/1"}', "verify.json": greenVerify(), "claude.jsonl": result() }, 0, undefined, extra);
+    assert.equal(r.metric.status, "failed");
+    assert.ok(r.failedComment.includes(f) && r.failedComment.includes("protectedPaths"), r.failedComment);
+  }
+  prFiles = "scripts/library.sh\nscripts/test-services.sh\n"; // ähnlich, aber nicht geschützt
+  const ok = await finishRun("build", { "status.json": '{"status":"accepting","pr":"https://x/pull/1"}', "verify.json": greenVerify(), "claude.jsonl": result() }, 0, undefined, extra);
+  assert.equal(ok.metric.status, "accepting");
+  prFiles = "src/app/page.tsx\n";
+});
+
+test("protectedHit: Ordner mit /, sonst exakter Pfad", () => {
+  const conf = cfg({ protectedPaths: ["./scripts/stage.sh", "scripts/lib/", ""] });
+  assert.equal(protectedHit(conf, ["a.ts", "scripts/stage.sh"]), "scripts/stage.sh");
+  assert.equal(protectedHit(conf, ["scripts/lib/x.py"]), "scripts/lib/x.py");
+  assert.equal(protectedHit(conf, ["scripts/stage.sh.bak", "scripts/library/x", "x/scripts/lib/y"]), undefined);
+  assert.equal(protectedHit(cfg(), ["scripts/stage.sh"]), undefined);
+});
+
+test("Bau mit grünen Checks auf dem gepushten Commit geht in die Abnahme", async () => {
+  const verify = greenVerify();
   const r = await finishRun("build", { "status.json": '{"status":"accepting","pr":"https://x/pull/1"}', "verify.json": verify, "claude.jsonl": result() });
   assert.equal(r.metric.status, "accepting");
   assert.equal(r.failedComment, "");
@@ -227,4 +298,28 @@ test("Fehlerkommentar enthält keine Server-Dateien und keine Tokens", async () 
     startedAt: "2026-11-11T10:00:00Z", finishedAt: "2026-11-11T10:05:00Z", exitCode: 1 });
   const posted = calls.map((x) => x.stdin).join("\n");
   assert.ok(!posted.includes("GEHEIM"));
+});
+
+// ---------- Spec-Pfade und Secret-Dateien ----------
+
+test("specPaths findet flache und Ordner-Specs, nur von berechtigten Personen", () => {
+  setFactoryLogin("factory-bot");
+  const i = { ...issue([c("fremd", "Spec: features/PROJ-9-boese.md"), c("factory-bot", "Spec: `features/PROJ-7-neu.md`")]), body: "Spec: features/PROJ-114-listen-webapp.md\n\nText" };
+  assert.deepEqual(specPaths(cfg(), i).sort(), ["features/PROJ-114-listen-webapp.md", "features/PROJ-7-neu.md"]);
+  assert.deepEqual(specPaths(cfg(), { ...issue([]), body: "**Spec:** features/PROJ-3-x/spec.md" }), ["features/PROJ-3-x/spec.md"]);
+});
+
+test("isSecretFile erkennt .env-Dateien und Schlüssel, aber keine Vorlagen", () => {
+  for (const f of [".env", "docker/compose/automations/n8n/.env", ".env.local", ".env.production", "prod.env", "certs/private-key.pem", "x.key", "id_ed25519", "secrets.yaml", "a/passwords.txt"]) {
+    assert.ok(isSecretFile(f), f);
+  }
+  for (const f of [".env.example", "docker/compose/automations/alice-lists/.env.example", "README.md", "envelope.ts", "src/env.ts", "id_ed25519.pub", "compose.test.yml"]) {
+    assert.ok(!isSecretFile(f), f);
+  }
+});
+
+test("redact entfernt Passwörter aus Variablen", () => {
+  const out = redact("PGPASSWORD=s3cr3t REDIS_PASSWORD=abc HA_TOKEN=xyz normal=1");
+  assert.ok(!/s3cr3t|abc|xyz/.test(out), out);
+  assert.ok(out.includes("normal=1"));
 });

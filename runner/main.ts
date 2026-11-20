@@ -8,6 +8,8 @@ import {
   rmSync, statSync, writeFileSync, writeSync, chownSync,
 } from "node:fs";
 import { join } from "node:path";
+import type { Server } from "node:net";
+import { OWNER_LABEL, halfOpenSupported, parseBytes, startGuard } from "./docker-guard.ts";
 
 export type Config = {
   repos: string[];
@@ -32,11 +34,17 @@ export type Config = {
   improve?: { everyDays?: number };
   /** Vorschau pro PR mit Passwortschutz (Nutzer "factory"). Mit domain über HTTPS, sonst http://<host>:<4000+slot> */
   preview?: { host: string; domain?: string; password: string; max?: number; memory?: string };
+  /** Docker im Job (Docker-out-of-Docker über den Docker-Wächter). Fehlt der Eintrag, haben Jobs kein Docker.
+   *  Grenzen gelten pro Test-Container, den ein Job startet. */
+  docker?: { memory?: string; cpus?: number; pids?: number; maxContainers?: number };
+  /** Dateien, die ein Factory-PR nie ändern darf (z. B. Pflicht-Checks, Skripte, die der Mensch mit echten
+   *  Zugangsdaten ausführt). Eintrag mit "/" am Ende = ganzer Ordner. Gilt zusätzlich zu den Spec-Dateien. */
+  protectedPaths?: string[];
 };
 
 type Comment = { author: { login: string } | null; body: string; createdAt: string };
 type Issue = { number: number; title: string; body: string; url: string; labels: { name: string }[]; comments: Comment[] };
-type Container = { name: string; repo: string; issue: number; phase: Phase; mode: string; running: boolean; startedAt: string; finishedAt: string; exitCode: number };
+type Container = { name: string; repo: string; issue: number; phase: Phase; mode: string; running: boolean; startedAt: string; finishedAt: string; exitCode: number; docker?: boolean };
 type Phase = "check" | "build" | "accept";
 type Mode = "new" | "answer" | "change-request" | "retry" | "rework";
 
@@ -138,7 +146,8 @@ export function redact(text: string): string {
   return text
     .replace(/sk-ant-[A-Za-z0-9_-]+/g, "[Zugangsdaten entfernt]")
     .replace(/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "[Zugangsdaten entfernt]")
-    .replace(/(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|GH_TOKEN|GITHUB_TOKEN)=\S+/g, "$1=[entfernt]");
+    .replace(/(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|GH_TOKEN|GITHUB_TOKEN)=\S+/g, "$1=[entfernt]")
+    .replace(/\b(\w*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|PRIVATE_KEY)\w*)=\S+/gi, "$1=[entfernt]");
 }
 
 // ---------- Dauerhafter Zustand pro Issue (nur für den Runner) ----------
@@ -206,6 +215,28 @@ export function humanCommentsSinceFactory(cfg: Config, issue: Issue): Comment[] 
 async function findPr(repo: string, n: number, state: "open" | "merged" | "all") {
   const prs = JSON.parse(await gh(["pr", "list", "-R", repo, "--head", `factory/${n}`, "--state", state, "--json", "number,url,state"]));
   return prs[0] as { number: number; url: string; state: string } | undefined;
+}
+
+/** Spec-Dateien, auf die das Issue zeigt (Zeile "Spec: <pfad>" im Issue oder in Kommentaren berechtigter Menschen). */
+export function specPaths(cfg: Config, issue: Issue): string[] {
+  const texts = [issue.body ?? "", ...issue.comments.filter((c) => !isFactoryComment(c) && isTrusted(cfg, loginOf(c))).map((c) => c.body)];
+  const found = new Set<string>();
+  for (const t of texts) for (const m of t.matchAll(/^[\s*_>-]*Spec:?[*_]*\s*\[?`?([\w./-]+\.md)/gim)) found.add(m[1].replace(/^\.\//, ""));
+  return [...found];
+}
+
+/** Erster Pfad aus `files`, der unter `protectedPaths` fällt (Ordner mit "/" am Ende, sonst exakt). */
+export function protectedHit(cfg: Config, files: string[]): string | undefined {
+  const rules = (cfg.protectedPaths ?? []).map((p) => p.trim().replace(/^\.\//, "")).filter(Boolean);
+  return files.find((f) => rules.some((r) => (r.endsWith("/") ? f.startsWith(r) : f === r)));
+}
+
+/** Dateien, die nie in ein Repo gehören: .env-Dateien (außer Vorlagen), Schlüssel, Zertifikate, Passwortdateien. */
+export function isSecretFile(path: string): boolean {
+  const name = path.trim().split("/").pop()!.toLowerCase();
+  if (/\.(example|sample|template|dist)$/.test(name)) return false;
+  return /^\.env(\..+)?$/.test(name) || /\.env$/.test(name) || /\.(pem|key|p12|pfx|password)$/.test(name)
+    || /^id_(rsa|dsa|ecdsa|ed25519)$/.test(name) || /^(secrets\.ya?ml|passwords?\.txt|credentials\.json|\.npmrc|\.pypirc)$/.test(name);
 }
 
 // ---------- Board (GitHub Projects, optional) ----------
@@ -279,6 +310,8 @@ async function syncBoard(cfg: Config, url: string, status: string, step?: string
 const containerName = (repo: string, n: number) => `sf-${repo.replace(/[^a-zA-Z0-9]+/g, "-").toLowerCase()}-${n}`;
 const jobDir = (cfg: Config, repo: string, n: number) => join(cfg.dataDir, "jobs", `${repo.replace("/", "__")}__${n}`);
 const scenarioDir = (cfg: Config, repo: string, n: number) => join(cfg.dataDir, "scenarios", `${repo.replace("/", "__")}__${n}`);
+/** Gemeinsame Paket-Caches (uv, npm) für alle Jobs: spart Downloads, enthält keine Zugangsdaten */
+const CACHE_MOUNTS = ["-v", "sf-cache-uv:/home/pwuser/.cache/uv", "-v", "sf-cache-npm:/home/pwuser/.npm"];
 const agentLimits = (cfg: Config) => ["--memory", cfg.containerMemory, "--memory-swap", cfg.containerMemory, "--pids-limit", "4096", "--shm-size", "1g"];
 
 async function listContainers(): Promise<Container[]> {
@@ -290,6 +323,7 @@ async function listContainers(): Promise<Container[]> {
       name, repo: info.Config.Labels["sf.repo"], issue: Number(info.Config.Labels["sf.issue"]),
       phase: (info.Config.Labels["sf.phase"] ?? "build") as Phase,
       mode: info.Config.Labels["sf.mode"] ?? "new",
+      docker: info.Config.Labels["sf.docker"] === "1",
       finishedAt: info.State.FinishedAt,
       running: info.State.Running, startedAt: info.State.StartedAt, exitCode: info.State.ExitCode,
     });
@@ -323,6 +357,8 @@ export function buildPrompt(cfg: Config, repo: string, issue: Issue, phase: Phas
     `- Workflow: ${cfg.workflow} (Beschreibung: /factory/workflows/${cfg.workflow}/workflow.md)`,
     `- Phase: ${phase === "check" ? "Prüfung" : phase === "build" ? "Bau" : "Abnahme"}`,
     `- Modus: ${modeText[mode]}`,
+    ...(cfg.docker && phase !== "check" ? [`- Docker: verfügbar (Docker-Wächter, siehe Playbook „Docker im Job")`] : []),
+    ...(cfg.protectedPaths?.length && phase !== "check" ? [`- Geschützt, nie ändern (sonst wird der Bau abgelehnt): ${cfg.protectedPaths.map((p) => `\`${p}\``).join(", ")}`] : []),
     ...(extra ? [`- ${extra}`] : []),
     ``, `## Issue: ${issue.title}`, ``, issue.body || "_(kein Text)_",
     ``, `## Verlauf`, ``, comments || "_(keine Kommentare)_",
@@ -372,24 +408,28 @@ async function launch(cfg: Config, repo: string, issue: Issue, phase: Phase, mod
   const ghToken = (await gh(["auth", "token"])).trim();
   const authVar = process.env.CLAUDE_CODE_OAUTH_TOKEN ? "CLAUDE_CODE_OAUTH_TOKEN" : "ANTHROPIC_API_KEY";
   await docker(["rm", "-f", name]).catch(() => {});
+  const dockerArgs = cfg.docker && phase !== "check" ? await prepareDocker(cfg, name, dir) : [];
   await docker([
-    "run", "-d", "--name", name,
+    "run", "-d", "--name", name, ...dockerArgs,
     "--label", "software-factory=1", "--label", `sf.repo=${repo}`, "--label", `sf.issue=${issue.number}`, "--label", `sf.phase=${phase}`, "--label", `sf.mode=${mode}`,
     ...agentLimits(cfg),
     "-e", `REPO=${repo}`, "-e", `ISSUE=${issue.number}`, "-e", `BRANCH=factory/${issue.number}`,
     "-e", `MODEL=${cfg.model}`, "-e", `WORKFLOW=${cfg.workflow}`, "-e", `PHASE=${phase}`,
     "-e", "GH_TOKEN", "-e", authVar, // Werte kommen aus der Umgebung, nicht aus der Kommandozeile
-    "-v", `${dir}:/work`, ...scenarioMount,
+    "-v", `${dir}:/work`, ...scenarioMount, ...CACHE_MOUNTS,
     await imageFor(cfg, repo),
   ], { GH_TOKEN: ghToken });
   log("job:started", { repo, issue: issue.number, phase, mode, container: name });
 }
 
 /** Nach einem Bau-Lauf: Sind die Pflicht-Checks auf genau dem gepushten Stand grün und ist die Spec unverändert? */
-async function checkBuild(repo: string, issue: number, dir: string, prUrl?: string): Promise<string | null> {
+async function checkBuild(cfg: Config, repo: string, issue: number, dir: string, prUrl?: string): Promise<string | null> {
   const verify = readJobJson(join(dir, "verify.json"));
   if (!verify || verify.ok !== true || !Array.isArray(verify.results) || verify.results.length === 0) {
     return "Die Pflicht-Checks wurden nicht ausgeführt oder sind nicht grün (`factory-verify`).";
+  }
+  if (!verify.results.some((r: any) => r?.name === "secrets" && r?.exit === 0)) {
+    return "Der Zugangsdaten-Scan (`secrets` in `factory-verify`) fehlt oder ist nicht grün.";
   }
   let head = "";
   try { head = (await gh(["api", `repos/${repo}/git/ref/heads/factory/${issue}`, "--jq", ".object.sha"])).trim(); } catch {}
@@ -397,10 +437,19 @@ async function checkBuild(repo: string, issue: number, dir: string, prUrl?: stri
   if (verify.sha !== head) return `Die Checks liefen auf \`${String(verify.sha).slice(0, 7)}\`, gepusht ist aber \`${head.slice(0, 7)}\`. Nach dem letzten Commit muss \`factory-verify\` erneut laufen.`;
   if (prUrl) {
     try {
-      const files = (await gh(["pr", "diff", prUrl, "--name-only"])).split("\n");
-      const spec = files.find((f) => /^features\/[^/]+\/spec\.md$/.test(f.trim()));
-      if (spec) return `Der Pull Request ändert die Spec \`${spec.trim()}\`. Die Spec ist der Vertrag und darf nur vom Menschen geändert werden.`;
-    } catch {}
+      const files = (await gh(["pr", "diff", prUrl, "--name-only"])).split("\n").map((f) => f.trim()).filter(Boolean);
+      const secret = files.find(isSecretFile);
+      if (secret) return `Der Pull Request enthält die Datei \`${secret}\`. Zugangsdaten, .env-Dateien und Schlüssel gehören nie ins Repo. Datei aus dem Branch entfernen (Verlauf bereinigen) und neu prüfen.`;
+      const data: Issue = JSON.parse(await gh(["issue", "view", String(issue), "-R", repo, "--json", "number,title,body,url,labels,comments"]));
+      const specs = new Set(specPaths(cfg, data));
+      const spec = files.find((f) => specs.has(f) || /^features\/[^/]+\/spec\.md$/.test(f));
+      if (spec) return `Der Pull Request ändert die Spec \`${spec}\`. Die Spec ist der Vertrag und darf nur vom Menschen geändert werden.`;
+      const prot = protectedHit(cfg, files);
+      if (prot) return `Der Pull Request ändert \`${prot}\`. Diese Datei ist geschützt (\`protectedPaths\` in der Factory-Config), sie ändert nur der Mensch. Änderung zurücknehmen; ist sie nötig, im PR unter „Offene Punkte" beschreiben.`;
+    } catch (e) {
+      // Ohne Dateiliste ist nichts geprüft: lieber erneut bauen lassen als ungeprüft in die Abnahme.
+      return `Die Dateien des Pull Requests ließen sich nicht prüfen (${redact(String((e as Error)?.message ?? e)).slice(0, 200)}).`;
+    }
   }
   return null;
 }
@@ -421,7 +470,7 @@ async function finish(cfg: Config, c: Container, reason?: string) {
   let problem = reason ?? null;
   if (!problem && !(status.status && endStates[c.phase].includes(status.status))) problem = "Der Lauf hat kein Ergebnis gemeldet.";
   if (!problem && (c.exitCode !== 0 || result.is_error)) problem = `Claude Code wurde mit einem Fehler beendet (Exit-Code ${c.exitCode}).`;
-  if (!problem && c.phase === "build" && status.status === "accepting") problem = await checkBuild(c.repo, c.issue, dir, status.pr);
+  if (!problem && c.phase === "build" && status.status === "accepting") problem = await checkBuild(cfg, c.repo, c.issue, dir, status.pr);
   const ended = !problem;
   const metricStatus = ended ? (status.status === "review" && status.unresolved ? "unresolved" : status.status) : "failed";
 
@@ -465,6 +514,76 @@ async function finish(cfg: Config, c: Container, reason?: string) {
       `_Schreib einen Kommentar mit einem Hinweis, dann versucht die Factory es erneut._`);
   }
   await docker(["rm", "-f", c.name]).catch(() => {});
+}
+
+// ---------- Docker im Job (Docker-out-of-Docker) ----------
+// Bau- und Abnahme-Jobs bekommen einen eigenen Socket des Docker-Wächters (runner/docker-guard.ts) und ein eigenes Netz.
+// Alles, was ein Job anlegt, trägt das Label sf.owner=<job>. Ist der Job vorbei, räumt der Runner es weg.
+
+const GUARD_DIR = "/run/software-factory/docker";
+const guards = new Map<string, Server>();
+export const jobNetwork = (name: string) => `${name}-net`;
+
+async function ensureGuard(cfg: Config, name: string, dir: string) {
+  if (guards.has(name)) return;
+  const d = cfg.docker ?? {};
+  const server = await startGuard(join(GUARD_DIR, name, "docker.sock"), {
+    owner: name, network: jobNetwork(name), hostWorkDir: dir,
+    memoryBytes: parseBytes(d.memory, 4 * 1024 ** 3), nanoCpus: Math.round((d.cpus ?? 2) * 1e9),
+    pids: d.pids ?? 1024, maxContainers: d.maxContainers ?? 12,
+  }, log);
+  guards.set(name, server);
+  log("docker:guard", { container: name });
+}
+
+/** Netz und Wächter für einen Job anlegen. Gibt die zusätzlichen Argumente für "docker run" zurück. */
+async function prepareDocker(cfg: Config, name: string, dir: string): Promise<string[]> {
+  const net = jobNetwork(name);
+  const exists = await docker(["network", "inspect", net]).then(() => true).catch(() => false);
+  if (!exists) await docker(["network", "create", "--label", `${OWNER_LABEL}=${name}`, net]);
+  await ensureGuard(cfg, name, dir);
+  return [
+    "--label", "sf.docker=1", "--network", net,
+    "-v", `${join(GUARD_DIR, name)}:/run/sf-docker:ro`,
+    "-e", "DOCKER_HOST=unix:///run/sf-docker/docker.sock", "-e", "DOCKER_BUILDKIT=0", "-e", "FACTORY_DOCKER=1",
+  ];
+}
+
+const lines = (out: string) => out.split("\n").map((l) => l.trim()).filter(Boolean);
+
+/** Entfernt alles, was ein Job über den Wächter angelegt hat. */
+async function cleanupOwned(owner: string) {
+  const f = ["--filter", `label=${OWNER_LABEL}=${owner}`];
+  const containers = lines(await docker(["ps", "-aq", ...f]));
+  if (containers.length) await docker(["rm", "-f", "-v", ...containers]).catch(() => {});
+  for (const n of lines(await docker(["network", "ls", "-q", ...f]))) await docker(["network", "rm", n]).catch(() => {});
+  const volumes = lines(await docker(["volume", "ls", "-q", ...f]));
+  if (volumes.length) await docker(["volume", "rm", "-f", ...volumes]).catch(() => {});
+  const images = [...new Set(lines(await docker(["images", "-q", ...f])))];
+  if (images.length) await docker(["rmi", "-f", ...images]).catch(() => {});
+  log("docker:cleanup", { owner, containers: containers.length, volumes: volumes.length, images: images.length });
+}
+
+/** Wächter für laufende Jobs bereithalten (auch nach einem Runner-Neustart), Reste beendeter Jobs entfernen. */
+async function syncDocker(cfg: Config, running: Container[]) {
+  const alive = new Set(running.map((c) => c.name));
+  for (const [name, server] of guards) {
+    if (!alive.has(name)) { server.close(); guards.delete(name); rmSync(join(GUARD_DIR, name), { recursive: true, force: true }); }
+  }
+  if (cfg.docker) {
+    for (const c of running) {
+      if (c.docker && !guards.has(c.name)) await ensureGuard(cfg, c.name, jobDir(cfg, c.repo, c.issue)).catch((e) => log("docker:guard-error", { container: c.name, error: String(e) }));
+    }
+  }
+  const label = ["--filter", `label=${OWNER_LABEL}`];
+  const owners = new Set([
+    ...lines(await docker(["ps", "-a", ...label, "--format", `{{.Label "${OWNER_LABEL}"}}`])),
+    ...lines(await docker(["network", "ls", ...label, "--format", `{{.Label "${OWNER_LABEL}"}}`])),
+    ...lines(await docker(["volume", "ls", ...label, "--format", `{{.Label "${OWNER_LABEL}"}}`])),
+  ]);
+  const images = lines(await docker(["images", "-q", ...label]));
+  if (images.length) for (const o of lines(await docker(["image", "inspect", "--format", `{{index .Config.Labels "${OWNER_LABEL}"}}`, ...new Set(images)]))) owners.add(o);
+  for (const owner of owners) if (!alive.has(owner)) await cleanupOwned(owner);
 }
 
 // ---------- Vorschau pro Pull Request (optional) ----------
@@ -763,6 +882,7 @@ async function tick(cfg: Config) {
     }
   }
   containers = (await listContainers()).filter((c) => c.running);
+  await syncDocker(cfg, containers).catch((e) => log("docker:sync-error", { error: String(e) }));
   const improving = await improveRunning(cfg);
   const slots = { free: cfg.maxParallel - containers.length - (improving ? 1 : 0) };
 
@@ -785,6 +905,11 @@ async function main() {
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN && process.env.ANTHROPIC_API_KEY) {
     log("config:warning", { warning: "Beide Login-Arten gesetzt. Es wird nur CLAUDE_CODE_OAUTH_TOKEN an die Jobs gegeben." });
   }
+  if (cfg.docker && !(await halfOpenSupported(GUARD_DIR))) {
+    log("config:error", { error: `Diese Bun-Version (${process.versions.bun ?? "?"}) kann keine halboffenen Verbindungen. ` +
+      "Ohne sie liefern docker exec/attach im Job keine Ausgabe. Abhilfe: bun upgrade (getestet mit 1.4.5), dann systemctl restart software-factory" });
+    process.exit(1);
+  }
   CONTAINER_UID = Number((await docker(["run", "--rm", "--entrypoint", "id", cfg.image, "-u"])).trim());
   FACTORY_LOGIN = (await gh(["api", "user", "--jq", ".login"])).trim();
   await initBoard(cfg);
@@ -792,6 +917,7 @@ async function main() {
     login: FACTORY_LOGIN, allowedUsers: cfg.allowedUsers ?? [],
     preview: cfg.preview ? previewLink(cfg, 1).replace(/:4001$/, ":4001…") : "aus",
     containerUid: CONTAINER_UID, repos: cfg.repos, maxParallel: cfg.maxParallel, model: cfg.model, workflow: cfg.workflow,
+    docker: cfg.docker ? "Docker-Wächter an" : "aus",
   });
   while (true) {
     try {
@@ -805,6 +931,6 @@ async function main() {
   }
 }
 
-export { finish, tick }; // für Tests
+export { finish, tick, prepareDocker, syncDocker }; // für Tests
 
 if ((import.meta as any).main) main();

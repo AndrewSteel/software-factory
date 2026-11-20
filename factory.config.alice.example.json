@@ -1,0 +1,30 @@
+{
+  "repos": [
+    "AndrewSteel/alice"
+  ],
+  "label": "factory",
+  "maxParallel": 1,
+  "model": "opus",
+  "workflow": "alice",
+  "pollSeconds": 60,
+  "jobTimeoutMinutes": 120,
+  "containerMemory": "4g",
+  "allowedUsers": [],
+  "docker": {
+    "memory": "2g",
+    "cpus": 2,
+    "pids": 1024,
+    "maxContainers": 8
+  },
+  "protectedPaths": [
+    ".factory/setup.json",
+    "scripts/test-services.sh",
+    "scripts/test-containers.sh",
+    "scripts/stage.sh",
+    "scripts/lib/"
+  ],
+  "factoryRepo": "AUTO",
+  "improve": {
+    "everyDays": 0
+  }
+}

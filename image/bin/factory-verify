@@ -26,6 +26,15 @@ fi
 SHA=$(git rev-parse HEAD)
 RESULTS="[]"; FAILED=0
 MD="| Check | Befehl | Ergebnis |\n|---|---|---|\n"
+
+# Fester Check, den kein Repo abschalten kann: keine Zugangsdaten in den neuen Commits
+RANGE="${FACTORY_SCAN_BASE:-origin/${FACTORY_DEFAULT_BRANCH:-main}}..HEAD"
+echo "▶ secrets: factory-secret-scan $RANGE"
+OUT=$("${FACTORY_SECRET_SCAN:-factory-secret-scan}" "$RANGE" </dev/null 2>&1); CODE=$?
+TAIL=$(printf "%s" "$OUT" | tail -n 25)
+if [ $CODE -eq 0 ]; then echo "  ✓ bestanden"; ICON="✅"; else echo "  ✗ fehlgeschlagen (Exit $CODE)"; printf "%s\n" "$TAIL"; ICON="❌ Exit $CODE"; FAILED=1; fi
+MD+="| secrets | \`factory-secret-scan\` | $ICON |\n"
+RESULTS=$(jq --arg t "$TAIL" --argjson e $CODE '. + [{name:"secrets", cmd:"factory-secret-scan", exit:$e, tail:$t}]' <<<"$RESULTS")
 while IFS=$'\t' read -r NAME CMD; do
   [ -z "$NAME" ] && continue
   echo "▶ $NAME: $CMD"

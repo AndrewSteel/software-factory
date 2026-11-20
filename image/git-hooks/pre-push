@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Vor jedem Push: Zugangsdaten-Scan über alle Commits, die GitHub noch nicht kennt.
+# Bei einem öffentlichen Repo wäre ein gepushter Commit sofort öffentlich, auch wenn der PR nie gemergt wird.
+set -uo pipefail
+ZERO=0000000000000000000000000000000000000000
+while read -r _lref lsha _rref rsha; do
+  [ "$lsha" = "$ZERO" ] && continue                                   # Branch löschen
+  if [ "$rsha" = "$ZERO" ]; then base="origin/${FACTORY_DEFAULT_BRANCH:-main}"; else base="$rsha"; fi
+  if ! factory-secret-scan "$base..$lsha"; then
+    echo "Push abgebrochen: In den Commits stehen möglicherweise Zugangsdaten. Siehe oben." >&2
+    exit 1
+  fi
+done
+exit 0

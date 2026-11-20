@@ -272,6 +272,7 @@ Die Konfiguration liegt in `/etc/software-factory/config.json`. Die wichtigsten 
 | `preview.domain` | leer | Subdomain für HTTPS-Vorschauen (Schritt 6b) |
 | `allowedUsers` | `[]` | Weitere GitHub-Nutzer, deren Antworten und Änderungswünsche die Factory annimmt. Dein eigener Login zählt immer |
 | `improve.everyDays` | `0` (aus) | Automatischer Verbesserungs-Lauf alle X Tage. Sonst nur mit `factory-improve` |
+| `protectedPaths` | `[]` | Dateien, die ein Factory-PR nie ändern darf, z. B. `.factory/setup.json` oder Skripte, die du selbst mit echten Zugangsdaten ausführst. `ordner/` schützt einen ganzen Ordner. Ändert ein PR eine davon, wird der Bau abgelehnt |
 
 Nach Änderungen: `systemctl restart software-factory`.
 

@@ -23,6 +23,8 @@ GH_ID=$(gh api user --jq .id)
 git config --global user.name "$GH_LOGIN (Software Factory)"
 git config --global user.email "${GH_ID}+${GH_LOGIN}@users.noreply.github.com"
 git config --global init.defaultBranch main
+# Vor jedem Push: Zugangsdaten-Scan (gilt für alle Repos im Container)
+git config --global core.hooksPath /factory/git-hooks
 
 cd /work
 if [ ! -d repo/.git ]; then

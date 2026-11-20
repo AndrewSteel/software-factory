@@ -12,11 +12,14 @@ disable-model-invocation: true
 
 ## Schritte
 
-1. **Spec finden:** `ls -d features/<PROJ-X>-*/` → darin muss `spec.md` liegen. Gibt es keine, abbrechen: „Für <PROJ-X> gibt es noch keine Spec. Erst `/write-spec`."
+1. **Spec finden:** `ls -d features/<PROJ-X>-*/spec.md features/<PROJ-X>-*.md 2>/dev/null`
+   - Ordner-Ablage (Starter Kit): `features/<PROJ-X>-<name>/spec.md`
+   - Flache Ablage (z. B. Alice): `features/<PROJ-X>-<name>.md`. Dateien wie `….design.md` oder `….qa.md` sind keine Spec.
+   - Gibt es keine, abbrechen: „Für <PROJ-X> gibt es noch keine Spec. Erst `/write-spec`."
 
 2. **Prüfen, dass die Spec auf GitHub liegt.** Die Factory liest sie vom Standard-Branch, nicht von deinem Rechner.
    - Standard-Branch: `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`
-   - `git fetch origin` und prüfen, dass `spec.md` auf `origin/<standard-branch>` identisch ist: `git diff --quiet origin/<standard-branch> -- features/<ordner>/spec.md`
+   - `git fetch origin` und prüfen, dass die Spec auf `origin/<standard-branch>` identisch ist: `git diff --quiet origin/<standard-branch> -- <spec-pfad>`
    - Ist sie lokal geändert, nicht committet oder nicht gepusht: dem Nutzer sagen, was fehlt, und fragen, ob du committen und pushen sollst. Nicht ungefragt pushen.
 
 3. **Doppelte Übergabe vermeiden:** `gh issue list --label factory --state open --search "<PROJ-X> in:title" --json number,title`. Gibt es schon ein offenes Issue, dessen Link zeigen und abbrechen.
@@ -26,7 +29,7 @@ disable-model-invocation: true
    - Label: `factory`
    - Text:
      ```
-     Spec: features/<ordner>/spec.md
+     Spec: <spec-pfad>
 
      <ein Satz, worum es geht, aus den User Stories>
 
