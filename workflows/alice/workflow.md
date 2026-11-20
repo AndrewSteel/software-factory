@@ -37,7 +37,7 @@ Die Spec (`spec.md`) ändert die Factory nie. Den Status pflegt sie in `features
 
 ## Projekt-Skills von Alice
 
-Alice bringt eigene Skills in `.claude/skills/` mit (`backend`, `frontend`, `deploy`, `n8n-architecture` …). Sie stammen aus der Zeit der flachen Ablage und sind für die interaktive Arbeit am eigenen Rechner gedacht (Rückfragen per Dialog, n8n-MCP, Deploy). **In der Factory nicht verwenden.** Es gelten nur die Workflow-Skills `architecture`, `build` und `qa` (gleichnamige persönliche Skills haben Vorrang vor Projekt-Skills). Die Regeln aus `CLAUDE.md` und `.claude/rules/` gelten dagegen voll.
+Alice bringt eigene Skills in `.claude/skills/` mit: `init`, `write-spec`, `refine` und `deploy`. Sie sind für den Menschen am eigenen Rechner gedacht (Phasenplanung, Spec-Interview, Deploy). **In der Factory nicht verwenden.** Es gelten nur die Workflow-Skills `architecture`, `build` und `qa` (gleichnamige persönliche Skills haben Vorrang vor Projekt-Skills). Die Regeln aus `CLAUDE.md` und `.claude/rules/` gelten dagegen voll.
 
 ## Stack-Packs
 

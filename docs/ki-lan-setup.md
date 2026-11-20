@@ -25,10 +25,10 @@ Danach wie gewohnt:
 3. Repo anbinden: `./scripts/add-repo.sh AndrewSteel/alice` (Labels, Board)
 4. Starten: `systemctl restart software-factory`, Logs: `journalctl -u software-factory -f`. In der Startzeile steht `"docker":"Docker-Wächter an"`.
 
-Auf deinem Rechner `write-spec` und `to-factory` installieren (als persönliche Skills unter `~/.claude/skills/`, sie haben Vorrang vor Alices gleichnamigem Projekt-Skill, der noch flache Specs schreibt). `init` brauchst du nicht, Alice ist schon eingerichtet:
+Auf deinem Rechner nur `to-factory` installieren. Alice bringt eigene Projekt-Skills mit, die schon die Ordner-Ablage nutzen: `init` (neue Phase planen: PRD und Feature-Karte), `write-spec`, `refine` und `deploy`. Persönliche Skills gleichen Namens aus diesem Repo hätten Vorrang und würden Alices Versionen überdecken.
 
 ```bash
-./scripts/install-local-skills.sh write-spec to-factory
+./scripts/install-local-skills.sh to-factory
 ```
 
 ## Im Alice-Repo
