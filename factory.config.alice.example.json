@@ -21,7 +21,8 @@
     "scripts/test-services.sh",
     "scripts/test-containers.sh",
     "scripts/stage.sh",
-    "scripts/lib/"
+    "scripts/lib/",
+    "features/old/"
   ],
   "factoryRepo": "AUTO",
   "improve": {

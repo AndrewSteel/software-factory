@@ -4,7 +4,7 @@ Diese Anleitung gilt, wenn die Factory auf demselben Server läuft wie deine Anw
 
 1. **Docker im Job:** Bau und Abnahme starten Test-Container (Postgres, Redis, Weaviate, eigene Dienste). Dafür bekommt jeder Job einen eigenen **Docker-Wächter** statt des echten Docker-Sockets (Docker-out-of-Docker).
 2. **Keine Vorschau:** Das Alice-Frontend allein ergibt ohne die Dienste keine sinnvolle Vorschau, und Caddy würde sich Ports mit nginx teilen. In der Alice-Vorlage ist `preview` deshalb nicht gesetzt.
-3. **Workflow `alice`:** flache Specs (`features/PROJ-X-<name>.md`), Alice-Regeln, Stack-Packs für Docker-Dienste, Postgres, Redis, Weaviate, n8n und statisches Next.js.
+3. **Workflow `alice`:** Ablage wie im Starter Kit (`features/PROJ-X-<name>/spec.md`, alte flache Specs unter `features/old/`), Alice-Regeln, Stack-Packs für Docker-Dienste, Postgres, Redis, Weaviate, n8n und statisches Next.js.
 
 ## Einrichten
 
@@ -25,10 +25,10 @@ Danach wie gewohnt:
 3. Repo anbinden: `./scripts/add-repo.sh AndrewSteel/alice` (Labels, Board)
 4. Starten: `systemctl restart software-factory`, Logs: `journalctl -u software-factory -f`. In der Startzeile steht `"docker":"Docker-Wächter an"`.
 
-Auf deinem Rechner nur `to-factory` installieren, Alice hat eigene `init`- und `write-spec`-Skills:
+Auf deinem Rechner `write-spec` und `to-factory` installieren (als persönliche Skills unter `~/.claude/skills/`, sie haben Vorrang vor Alices gleichnamigem Projekt-Skill, der noch flache Specs schreibt). `init` brauchst du nicht, Alice ist schon eingerichtet:
 
 ```bash
-./scripts/install-local-skills.sh to-factory
+./scripts/install-local-skills.sh write-spec to-factory
 ```
 
 ## Im Alice-Repo

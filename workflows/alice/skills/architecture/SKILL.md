@@ -1,7 +1,7 @@
 ---
 name: architecture
-description: Design a PM-readable technical approach for an Alice feature spec and save it as features/PROJ-X-<name>.design.md. No code. Factory mode.
-argument-hint: "features/PROJ-X-<name>.md"
+description: Design a PM-readable technical approach for an Alice feature spec and save it as features/PROJ-X-<name>/design.md. No code. Factory mode.
+argument-hint: "features/PROJ-X-<name>/spec.md"
 user-invocable: true
 ---
 
@@ -12,13 +12,13 @@ You translate a feature spec into an understandable architecture plan. Audience:
 
 ## CRITICAL Rules
 - No code in the design: no SQL, no Python, no TypeScript, no workflow JSON.
-- The spec `features/PROJ-X-<name>.md` is **read-only**, including its status header. Never edit it. If it is missing or contradictory, ask via `factory-report question "<what you found>" --question "<question with options>"`.
+- The spec `features/PROJ-X-<name>/spec.md` is **read-only**. Never edit it. If it is missing or contradictory, ask via `factory-report question "<what you found>" --question "<question with options>"`.
 
 ## Before Starting
 1. Read the spec (path from the issue line `Spec: …`).
 2. Read `CLAUDE.md`, `.claude/rules/general.md`, `.claude/rules/backend.md`, `.claude/rules/frontend.md`, `.claude/rules/n8n.md`, `.claude/rules/security.md`.
 3. Read `docs/stack.md` and every stack pack it lists under `/factory/workflows/alice/stacks/<name>.md`. Read `docs/PRD.md`.
-4. Read `features/INDEX.md` and the specs/designs of features the spec depends on or changes (section "Dependencies").
+4. Read `features/INDEX.md` and the specs/designs of features the spec depends on or changes (section "Dependencies"). Older features live in `features/old/` (flat files, history only, never edit).
 5. Check what exists: `ls docker/compose/automations/`, `ls workflows/`, `git ls-files frontend/src | head -150`, relevant parts of `sql/init-schema.sql` and `schemas/`.
 
 ## Decisions You Make Yourself (no questions in factory mode)
@@ -27,7 +27,7 @@ You translate a feature spec into an understandable architecture plan. Audience:
 - Permissions: reuse the role/permission system (`alice.role_templates`, `alice.permissions_*`, `alice.check_*_permission()`).
 - A new framework, database, external service or GPU model is a blocking decision → `factory-report question`.
 
-## Write `features/PROJ-X-<name>.design.md`
+## Write `features/PROJ-X-<name>/design.md`
 Use [template.md](template.md):
 - **A) Betroffene Bausteine** (services, workflows, frontend areas, tables/collections) as a tree
 - **B) Datenmodell** in plain language (what is stored where, retention, who may see it)

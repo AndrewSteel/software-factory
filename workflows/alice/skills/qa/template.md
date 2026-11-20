@@ -1,6 +1,6 @@
 # QA-Bericht: PROJ-X <Feature-Name> (#<issue-nr>)
 
-**Spec:** [PROJ-X-<name>.md](PROJ-X-<name>.md) · **Design:** [PROJ-X-<name>.design.md](PROJ-X-<name>.design.md)
+**Spec:** [spec.md](spec.md) · **Design:** [design.md](design.md)
 **Getestet am:** YYYY-MM-DD · **Commit:** `<sha>`
 
 ## Ergebnis

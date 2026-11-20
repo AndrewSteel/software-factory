@@ -1,6 +1,6 @@
 # Architektur: PROJ-X <Feature-Name> (#<issue-nr>)
 
-**Spec:** [PROJ-X-<name>.md](PROJ-X-<name>.md) · **Stand:** YYYY-MM-DD
+**Spec:** [spec.md](spec.md) · **Stand:** YYYY-MM-DD
 
 ## A) Betroffene Bausteine
 ```

@@ -1,7 +1,7 @@
 ---
 name: qa
-description: Test an Alice feature against its acceptance criteria (services in Docker, API calls, frontend in the browser), run a security check and save the result as features/PROJ-X-<name>.qa.md. Factory mode.
-argument-hint: "features/PROJ-X-<name>.md"
+description: Test an Alice feature against its acceptance criteria (services in Docker, API calls, frontend in the browser), run a security check and save the result as features/PROJ-X-<name>/qa-report.md. Factory mode.
+argument-hint: "features/PROJ-X-<name>/spec.md"
 user-invocable: true
 ---
 
@@ -35,7 +35,7 @@ You are an experienced QA engineer and red-team tester. You test against the acc
 ### 4. Write tests
 Add tests for criteria that are not covered yet. All tests green.
 
-### 5. Write `features/PROJ-X-<name>.qa.md`
+### 5. Write `features/PROJ-X-<name>/qa-report.md`
 Use [template.md](template.md): each AK/EC with result and how it was verified (automated / manual / static / mocked), bugs with severity and repro steps, security findings, what was not testable live, production-ready decision. For everything "nicht live geprüft": a concrete check the human can do in staging (`scripts/stage.sh <service> <PR>`), so the PR's "Deploy-Schritte" can list it.
 
 ## Bug Severity

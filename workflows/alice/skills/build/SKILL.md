@@ -1,7 +1,7 @@
 ---
 name: build
 description: Implement an Alice feature from its spec + design end to end (schema, services, n8n workflows, frontend, tests). Factory mode.
-argument-hint: "features/PROJ-X-<name>.md"
+argument-hint: "features/PROJ-X-<name>/spec.md"
 user-invocable: true
 ---
 
@@ -11,7 +11,7 @@ user-invocable: true
 You implement what the spec describes, the way the design plans it. The spec is the contract: never edit it. If it turns out to be wrong or impossible, stop and ask via `factory-report question "<what you found>" --question "<question with options>"`.
 
 ## Before Starting
-1. Read the spec and `features/PROJ-X-<name>.design.md`.
+1. Read the spec and `design.md` in the same feature folder.
 2. Read `CLAUDE.md` and the rules in `.claude/rules/` that match the files you will touch. They are **binding** (language conventions, i18n, winston instead of console.log, RLS, …).
 3. Read `docs/stack.md` and the stack packs it lists under `/factory/workflows/alice/stacks/`.
 4. `features/INDEX.md` → status `In Progress` (only the status cell).

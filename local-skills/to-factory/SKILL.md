@@ -12,10 +12,7 @@ disable-model-invocation: true
 
 ## Schritte
 
-1. **Spec finden:** `ls -d features/<PROJ-X>-*/spec.md features/<PROJ-X>-*.md 2>/dev/null`
-   - Ordner-Ablage (Starter Kit): `features/<PROJ-X>-<name>/spec.md`
-   - Flache Ablage (z. B. Alice): `features/<PROJ-X>-<name>.md`. Dateien wie `….design.md` oder `….qa.md` sind keine Spec.
-   - Gibt es keine, abbrechen: „Für <PROJ-X> gibt es noch keine Spec. Erst `/write-spec`."
+1. **Spec finden:** `ls features/<PROJ-X>-*/spec.md 2>/dev/null` → `<spec-pfad>`. Gibt es keine, abbrechen: „Für <PROJ-X> gibt es noch keine Spec. Erst `/write-spec`." (Alte Specs unter `features/old/` werden nicht übergeben.)
 
 2. **Prüfen, dass die Spec auf GitHub liegt.** Die Factory liest sie vom Standard-Branch, nicht von deinem Rechner.
    - Standard-Branch: `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`

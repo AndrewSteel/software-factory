@@ -1,6 +1,6 @@
 # Workflow: Alice
 
-Für das Projekt [Alice](https://github.com/AndrewSteel/alice): lokale Dienste in Docker-Containern, n8n-Workflows, PostgreSQL/Redis/Weaviate und ein statisches Next.js-Frontend auf demselben Server, auf dem auch die Factory läuft. Aufbau wie der Starter-Kit-Workflow, angepasst an die Alice-Konventionen (flache Spec-Dateien, Regeln in `CLAUDE.md` und `.claude/rules/`, Deploy macht immer der Mensch).
+Für das Projekt [Alice](https://github.com/AndrewSteel/alice): lokale Dienste in Docker-Containern, n8n-Workflows, PostgreSQL/Redis/Weaviate und ein statisches Next.js-Frontend auf demselben Server, auf dem auch die Factory läuft. Aufbau wie der Starter-Kit-Workflow, angepasst an die Alice-Konventionen (Regeln in `CLAUDE.md` und `.claude/rules/`, Deploy macht immer der Mensch).
 
 ## Aufgabenteilung
 
@@ -10,30 +10,34 @@ Für das Projekt [Alice](https://github.com/AndrewSteel/alice): lokale Dienste i
 
 ## Ablage
 
-Flach im Ordner `features/`, wie in Alice üblich:
+Pro Feature ein Ordner, wie im Starter Kit:
 
 ```
 features/
-  INDEX.md                               Übersicht aller Features + Status
-  PROJ-114-listen-webapp.md              WAS: Spec mit User Stories, Akzeptanzkriterien (Vertrag, vom Menschen)
-  PROJ-114-listen-webapp.design.md       WIE: Architektur (Factory, Skill architecture)
-  PROJ-114-listen-webapp.qa.md           ERGEBNIS: Testbericht (Factory, Skill qa)
+  INDEX.md                         Übersicht aller Features + Status + nächste freie ID
+  PROJ-115-listen-teilen/
+    spec.md                        WAS: User Stories, Akzeptanzkriterien, Edge Cases (Vertrag, vom Menschen)
+    design.md                      WIE: Architektur (Factory, Skill architecture)
+    qa-report.md                   ERGEBNIS: Testbericht (Factory, Skill qa)
+  old/                             Historie: Features aus der Zeit vor der Factory (flache Dateien)
 ```
 
-Die Spec (`PROJ-X-<name>.md`) ändert die Factory nie, auch nicht den Status-Kopf darin. Den Status pflegt sie in `features/INDEX.md`.
+Die Spec (`spec.md`) ändert die Factory nie. Den Status pflegt sie in `features/INDEX.md`.
+
+`features/old/` ist **nur Historie**: lesen, wenn eine Spec auf ein altes Feature verweist (z. B. „baut auf PROJ-85 auf"), aber dort nie etwas ändern oder anlegen. Neue Features entstehen nur als Ordner direkt unter `features/`.
 
 ## Zuordnung zu den Factory-Phasen
 
-- **Prüfung:** Spec vorhanden (`Spec: features/PROJ-X-<name>.md` im Issue)? Akzeptanzkriterien testbar? Passt zu `docs/stack.md`, `docs/PRD.md`, `features/INDEX.md` und dem bestehenden Code? Lässt es sich ohne Produktivsysteme testen (siehe Stack-Packs)? Bei Freigabe: Testszenarien nach `/scenarios/scenarios.md`.
+- **Prüfung:** Spec vorhanden (`Spec: features/PROJ-X-<name>/spec.md` im Issue)? Akzeptanzkriterien testbar? Passt zu `docs/stack.md`, `docs/PRD.md`, `features/INDEX.md` und dem bestehenden Code? Lässt es sich ohne Produktivsysteme testen (siehe Stack-Packs)? Bei Freigabe: Testszenarien nach `/scenarios/scenarios.md`.
 - **Bau:**
-  - Schritt **Architektur** → Skill `architecture` → `PROJ-X-<name>.design.md` (Bug: reproduzieren, roter Test)
+  - Schritt **Architektur** → Skill `architecture` → `design.md` im Feature-Ordner (Bug: reproduzieren, roter Test)
   - Schritt **Umsetzung** → Skill `build`
-  - Schritt **Tests** → Skill `qa` → `PROJ-X-<name>.qa.md`
+  - Schritt **Tests** → Skill `qa` → `qa-report.md` im Feature-Ordner
 - **Abnahme:** Spec und Testszenarien gegen den PR-Branch: Dienste per Docker starten, APIs aufrufen, Frontend im Browser. Was nur mit Produktivsystemen geht (Home Assistant, echtes LLM, NAS, Google), wird mit Attrappen geprüft und im Bericht als „nicht live geprüft" markiert.
 
 ## Projekt-Skills von Alice
 
-Alice bringt eigene Skills in `.claude/skills/` mit (`backend`, `frontend`, `deploy`, `n8n-architecture` …). Sie sind für die interaktive Arbeit am eigenen Rechner gedacht (Rückfragen per Dialog, n8n-MCP, Deploy). **In der Factory nicht verwenden.** Es gelten nur die Workflow-Skills `architecture`, `build` und `qa` (gleichnamige persönliche Skills haben Vorrang vor Projekt-Skills). Die Regeln aus `CLAUDE.md` und `.claude/rules/` gelten dagegen voll.
+Alice bringt eigene Skills in `.claude/skills/` mit (`backend`, `frontend`, `deploy`, `n8n-architecture` …). Sie stammen aus der Zeit der flachen Ablage und sind für die interaktive Arbeit am eigenen Rechner gedacht (Rückfragen per Dialog, n8n-MCP, Deploy). **In der Factory nicht verwenden.** Es gelten nur die Workflow-Skills `architecture`, `build` und `qa` (gleichnamige persönliche Skills haben Vorrang vor Projekt-Skills). Die Regeln aus `CLAUDE.md` und `.claude/rules/` gelten dagegen voll.
 
 ## Stack-Packs
 
