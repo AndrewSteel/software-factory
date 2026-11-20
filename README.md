@@ -1,5 +1,12 @@
 # Software Factory
 
+> ⚠️ **Hinweis: Dies ist ein angepasster Fork für ein einzelnes Projekt.**
+> Das Original ist **[AlexPEClub/software-factory](https://github.com/AlexPEClub/software-factory)**. Wenn du die Software Factory selbst einsetzen willst, nimm das Original.
+>
+> Dieser Fork ist auf mein Projekt [Alice](https://github.com/AndrewSteel/alice) zugeschnitten: Die Factory läuft auf demselben Server wie die produktiven Dienste. Dazu kommen Docker-out-of-Docker über einen eigenen Docker-Wächter, zusätzliche Schranken gegen Zugangsdaten im Repo und der Workflow `alice` für Docker-Dienste, PostgreSQL, Redis, Weaviate und n8n. Einige Anpassungen sind allgemein, viele aber speziell für dieses Setup. Details: [docs/ki-lan-setup.md](docs/ki-lan-setup.md).
+>
+> Der Fork wird nicht als eigenständiges Produkt gepflegt. Ich gebe hier keinen Support, und Änderungen aus dem Original werden nur bei Bedarf übernommen. Der folgende Text stammt größtenteils aus dem Original, auch der Server- und Affiliate-Hinweis gleich darunter. Der Affiliate-Link gehört dem Autor des Originals.
+
 Eine Software Factory mit Claude Code, die rund um die Uhr auf deinem eigenen Server läuft.
 
 > 🖥️ **Server:** Die Factory läuft auf einem Linux-VPS. Getestet ist sie auf dem **Hostinger KVM 2** (2 CPU-Kerne, 8 GB RAM) mit der Vorlage „Ubuntu 24.04 mit Claude Code“.
