@@ -4,12 +4,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync, lstatSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildPrompt, caddyConfig, humanCommentsSinceFactory, lastFactoryMarker, readJobFile, redact,
-  reworksSinceApproval, setFactoryLogin, writeJobFile, specPaths, isSecretFile, protectedHit, type Config,
+  reworksSinceApproval, setFactoryLogin, writeJobFile, specPaths, isSecretFile, protectedHit, limitResumeAt, limitUntil, type Config,
 } from "./main.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "sf-test-"));
@@ -180,6 +180,7 @@ type Call = { cmd: string[]; stdin: string };
 const calls: Call[] = [];
 let headSha = "abc1234";
 let prFiles = "src/app/page.tsx\n";
+let listIssues = "[]";
 (globalThis as any).Bun = {
   spawn(cmd: string[], opts: any) {
     const call: Call = { cmd, stdin: "" };
@@ -188,6 +189,9 @@ let prFiles = "src/app/page.tsx\n";
     if (cmd[0] === "gh" && cmd[1] === "issue" && cmd[2] === "view") out = JSON.stringify(issue([]));
     if (cmd[0] === "gh" && cmd[1] === "api" && String(cmd[2]).includes("/git/ref/heads/")) out = headSha + "\n";
     if (cmd[0] === "gh" && cmd[1] === "pr" && cmd[2] === "diff") out = prFiles;
+    if (cmd[0] === "gh" && cmd[1] === "issue" && cmd[2] === "list") out = cmd.includes("factory:review") ? "[]" : listIssues;
+    if (cmd[0] === "gh" && cmd[1] === "pr" && cmd[2] === "list") out = "[]";
+    if (cmd[0] === "docker" && (cmd[1] === "ps" || cmd[1] === "network" || cmd[1] === "volume" || cmd[1] === "images")) out = "";
     return {
       stdout: new Blob([out]).stream(), stderr: new Blob([""]).stream(), kill() {},
       exited: (async () => { if (opts.stdin instanceof Blob) call.stdin = await opts.stdin.text(); return 0; })(),
@@ -298,6 +302,78 @@ test("Fehlerkommentar enthält keine Server-Dateien und keine Tokens", async () 
     startedAt: "2026-11-11T10:00:00Z", finishedAt: "2026-11-11T10:05:00Z", exitCode: 1 });
   const posted = calls.map((x) => x.stdin).join("\n");
   assert.ok(!posted.includes("GEHEIM"));
+});
+
+// ---------- Nutzungslimit: pausieren und fortsetzen ----------
+
+const LIMIT = "You've hit your 5-hour limit · resets 1:40am (UTC)";
+
+test("limitResumeAt liest die Reset-Zeit und gibt 5 Minuten Puffer", () => {
+  const at = (text: string, now: string) => limitResumeAt(text, new Date(now))?.toISOString();
+  assert.equal(at(LIMIT, "2026-11-21T00:10:00Z"), "2026-11-21T01:45:00.000Z");
+  assert.equal(at(LIMIT, "2026-11-21T02:00:00Z"), "2026-11-22T01:45:00.000Z"); // schon vorbei → nächster Tag
+  assert.equal(at("You've hit your limit · resets 3pm (Europe/Berlin)", "2026-11-21T10:00:00Z"), "2026-11-21T14:05:00.000Z");
+  assert.equal(at("You've hit your weekly limit · resets Nov 24, 3pm (Europe/Berlin)", "2026-11-21T10:00:00Z"), "2026-11-24T14:05:00.000Z");
+  assert.equal(at("You've hit your limit · resets 12am (UTC)", "2026-11-21T10:00:00Z"), "2026-11-22T00:05:00.000Z");
+  assert.equal(at("Claude AI usage limit reached|1795300000", "2026-11-21T10:00:00Z"), new Date(1795300000 * 1000 + 300_000).toISOString());
+  assert.equal(at("Claude AI usage limit reached|1795000000", "2026-11-21T10:00:00Z"), "2026-11-21T10:05:00.000Z"); // Reset vorbei → gleich
+  assert.equal(at("You've hit your 5-hour limit", "2026-11-21T10:00:00Z"), "2026-11-21T11:00:00.000Z"); // ohne Zeit: in einer Stunde
+  assert.equal(at("Tests fehlgeschlagen: 3 von 10", "2026-11-21T10:00:00Z"), undefined);
+});
+
+test("Nutzungslimit pausiert den Lauf statt ihn als Fehlschlag zu werten", async () => {
+  const r = await finishRun("build", { "status.json": '{"status":"working","step":"implementing"}', "claude.jsonl": result({ result: LIMIT, is_error: true }) }, 1);
+  assert.equal(r.metric.status, "paused");
+  const posted = calls.find((x) => x.cmd[1] === "issue" && x.cmd[2] === "comment")?.stdin ?? "";
+  assert.ok(posted.includes("software-factory:paused:build") && posted.includes("Nutzungslimit"), posted);
+  assert.ok(calls.some((x) => x.cmd[1] === "issue" && x.cmd[2] === "edit" && x.cmd.includes("factory:paused")));
+  const dataDir = join(r.dir, "..", "..");
+  const state = JSON.parse(readFileSync(join(dataDir, "state", "a__b__7.json"), "utf8"));
+  assert.equal(state.resume.phase, "build");
+  assert.equal(state.resume.count, 1);
+  assert.ok(Date.parse(state.resume.at) > Date.now());
+  // Globale Sperre für alle Issues bis zur selben Zeit
+  assert.equal(limitUntil(cfg({ dataDir })), Date.parse(state.resume.at));
+});
+
+test("Globale Limit-Sperre: keine neuen Läufe, wird nie verkürzt", async () => {
+  const dataDir = tmp();
+  writeFileSync(join(dataDir, "limit.json"), JSON.stringify({ until: "2099-01-01T00:00:00Z" }));
+  await finishRun("build", { "claude.jsonl": result({ result: LIMIT, is_error: true }) }, 1, undefined, { dataDir });
+  assert.equal(limitUntil(cfg({ dataDir })), Date.parse("2099-01-01T00:00:00Z"));
+
+  // tick startet bei aktiver Sperre keinen Container, auch nicht für ein neues Issue
+  const { tick } = await import("./main.ts");
+  listIssues = JSON.stringify([{ ...issue([]), labels: [{ name: "factory" }] }]);
+  const blocked = tmp();
+  writeFileSync(join(blocked, "limit.json"), JSON.stringify({ until: "2099-01-01T00:00:00Z" }));
+  calls.length = 0;
+  await tick(cfg({ dataDir: blocked, repos: ["a/b"], maxParallel: 2 }));
+  assert.ok(!existsSync(join(blocked, "jobs", "a__b__7")), "bei Sperre kein Job angelegt");
+  assert.ok(!calls.some((x) => x.cmd[0] === "docker" && x.cmd[1] === "run"));
+  // Gegenprobe ohne Sperre: der Runner beginnt mit dem Start (legt den Job-Ordner an)
+  const free = tmp();
+  await tick(cfg({ dataDir: free, repos: ["a/b"], maxParallel: 2 }));
+  assert.ok(existsSync(join(free, "jobs", "a__b__7")), "ohne Sperre wird gestartet");
+  listIssues = "[]";
+});
+
+test("Nach zu vielen Fortsetzungen oder bei Zeitüberschreitung gilt das Limit als Fehlschlag", async () => {
+  const dataDir = tmp();
+  mkdirSync(join(dataDir, "state"), { recursive: true });
+  writeFileSync(join(dataDir, "state", "a__b__7.json"), JSON.stringify({ resume: { at: "2026-11-21T01:45:00Z", phase: "build", count: 5 } }));
+  const r = await finishRun("build", { "claude.jsonl": result({ result: LIMIT, is_error: true }) }, 1, undefined, { dataDir });
+  assert.equal(r.metric.status, "failed");
+  assert.ok(r.failedComment.includes("5-mal fortgesetzt"), r.failedComment);
+  assert.equal(JSON.parse(readFileSync(join(dataDir, "state", "a__b__7.json"), "utf8")).resume, undefined);
+
+  const t = await finishRun("build", { "claude.jsonl": result({ result: LIMIT }) }, 137, "Zeitlimit von 90 Minuten überschritten.");
+  assert.equal(t.metric.status, "failed");
+});
+
+test("Prompt einer Fortsetzung verweist auf den vorhandenen Arbeitsstand", () => {
+  const p = buildPrompt(cfg(), "a/b", issue([]) as any, "build", "resume");
+  assert.ok(p.includes("Nutzungslimit") && p.includes("/work/repo"), p);
 });
 
 // ---------- Spec-Pfade und Secret-Dateien ----------

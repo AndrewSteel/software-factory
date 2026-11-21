@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Startet einen Factory-Job: Repo holen, Branch auschecken, Claude Code mit Playbook laufen lassen.
 # Erwartet: REPO, ISSUE, BRANCH, MODEL, WORKFLOW, GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN (oder ANTHROPIC_API_KEY)
-# und /work/prompt.md (vom Runner geschrieben).
+# und /work/prompt.md (vom Runner geschrieben). RESUME=1: Fortsetzung nach dem Nutzungslimit mit demselben
+# Arbeitsstand und derselben Claude-Session.
 set -euo pipefail
 
 log() { echo "[factory] $*"; }
@@ -10,12 +11,17 @@ log() { echo "[factory] $*"; }
 MODEL="${MODEL:-opus}"
 export PHASE="${PHASE:-build}"   # check = prüfen, build = entwickeln, accept = unabhängige Abnahme
 WORKFLOW="${WORKFLOW:-starter-kit}"
+RESUME="${RESUME:-}"
 
 # Workflow-Skills als Nutzer-Skills bereitstellen (landen nicht im Ziel-Repo)
 mkdir -p "$HOME/.claude/skills"
 if [ -d "/factory/workflows/$WORKFLOW/skills" ]; then
   cp -r "/factory/workflows/$WORKFLOW/skills/." "$HOME/.claude/skills/"
 fi
+# Claude-Sessions im Job-Ordner ablegen: Sie überleben den Container, damit ein Lauf nach dem Limit fortgesetzt werden kann
+mkdir -p /work/claude-sessions
+rm -rf "$HOME/.claude/projects"
+ln -s /work/claude-sessions "$HOME/.claude/projects"
 
 gh auth setup-git >/dev/null
 GH_LOGIN=$(gh api user --jq .login)
@@ -34,7 +40,10 @@ fi
 cd repo
 git fetch --quiet origin
 DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.name)
-if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+if [ "$RESUME" = "1" ] && [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$BRANCH" ]; then
+  # Fortsetzung: lokaler Stand bleibt, auch nicht gepushte Commits und uncommittete Änderungen
+  log "Fortsetzung auf dem lokalen Stand von $BRANCH"
+elif git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
   git checkout --quiet -B "$BRANCH" "origin/$BRANCH"
   # Die Abnahme startet immer mit genau dem gepushten Stand, ohne Reste früherer Läufe
   if [ "$PHASE" = "accept" ]; then git reset --quiet --hard "origin/$BRANCH" && git clean -ffdxq; fi
@@ -52,9 +61,26 @@ if [ "$PHASE" != "check" ] && [ -f .factory/setup.json ]; then
 fi
 
 export FACTORY_DEFAULT_BRANCH="$DEFAULT_BRANCH"
+
+# Fortsetzung: Session des vorigen Laufs dieser Phase, falls sie noch vorhanden ist. Sonst normaler Lauf mit prompt.md.
+SESSION_FILE=/work/claude-session
+RESUME_ARGS=()
+PROMPT="$(cat /work/prompt.md)"
+if [ "$RESUME" = "1" ] && [ -s "$SESSION_FILE" ]; then
+  SID=$(head -c 100 "$SESSION_FILE" | tr -cd 'a-zA-Z0-9-')
+  if [ -n "$SID" ] && compgen -G "/work/claude-sessions/*/$SID.jsonl" >/dev/null; then
+    RESUME_ARGS=(--resume "$SID")
+    PROMPT="Der Lauf wurde durch das Nutzungslimit von Claude Code unterbrochen und wird jetzt fortgesetzt. Mach genau dort weiter, wo du aufgehört hast (gleiche Phase, gleiche Regeln). Prüfe zuerst mit git status und git log, was schon erledigt ist."
+    log "Setze Claude-Session $SID fort"
+  else
+    log "Keine Session zum Fortsetzen gefunden, starte neu mit dem Arbeitsstand"
+  fi
+fi
+[ "$RESUME" = "1" ] || rm -f "$SESSION_FILE"   # neue Phase oder neuer Versuch: alte Session gilt nicht mehr
+
 log "Starte Claude Code ($MODEL, Phase: $PHASE, Workflow: $WORKFLOW) für $REPO#$ISSUE auf $BRANCH"
 set +e
-claude -p "$(cat /work/prompt.md)" \
+claude -p "$PROMPT" "${RESUME_ARGS[@]}" \
   --append-system-prompt-file /factory/playbook.md \
   --add-dir "/factory/workflows/$WORKFLOW" \
   --model "$MODEL" \
@@ -63,6 +89,9 @@ claude -p "$(cat /work/prompt.md)" \
   > /work/claude.jsonl 2> /work/claude.err
 CODE=$?
 set -e
+# Session-ID für eine mögliche Fortsetzung merken
+SID=$(jq -Rr 'fromjson? | select(.type == "system" and .subtype == "init") | .session_id // empty' /work/claude.jsonl 2>/dev/null | head -n 1)
+[ -n "$SID" ] && echo "$SID" > "$SESSION_FILE"
 log "Claude Code beendet mit Exit-Code $CODE"
 tail -n 1 /work/claude.jsonl | jq -r '"Ergebnis: " + ((.result // "-") | tostring | .[0:500])' 2>/dev/null || true
 exit $CODE

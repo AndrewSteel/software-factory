@@ -209,6 +209,7 @@ Innerhalb einer Minute übernimmt die Factory. Den Fortschritt siehst du auf dem
 | **Review** | Pull Request mit Belegen und Vorschau ist fertig | Prüfen und mergen |
 | **Fertig** | Gemergt | – |
 | **Fehlgeschlagen** | Technisch hängen geblieben | Im Issue kommentieren, dann versucht die Factory es erneut |
+| **Pausiert** | Nutzungslimit von Claude Code erreicht. Bis zum Reset startet die Factory für kein Issue einen Lauf. Danach setzt sie den Lauf automatisch fort, mit derselben Session und demselben Arbeitsstand (höchstens fünfmal) | – |
 
 Bei jeder Rückfrage, Ablehnung oder Fehlermeldung genügt ein Kommentar im Issue. Die Factory sieht ihn beim nächsten Durchlauf und macht weiter.
 
