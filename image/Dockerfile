@@ -4,6 +4,10 @@
 # psql/redis-cli für Test-Datenbanken und gitleaks für den Zugangsdaten-Scan vor jedem Push.
 FROM mcr.microsoft.com/playwright:v1.65.0-noble
 
+# Exempt from host clean-up jobs (e.g. `docker image prune -af --filter "label!=keep=true"`):
+# the image is only in use while a job runs and would otherwise be pruned.
+LABEL keep=true
+
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends git jq curl ca-certificates gnupg \
