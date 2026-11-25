@@ -181,6 +181,8 @@ const calls: Call[] = [];
 let headSha = "abc1234";
 let prFiles = "src/app/page.tsx\n";
 let listIssues = "[]";
+let labelList = "[]";
+let failIssueEdits = 0; // so viele "gh issue edit" schlagen fehl (z. B. Label fehlt im Repo)
 (globalThis as any).Bun = {
   spawn(cmd: string[], opts: any) {
     const call: Call = { cmd, stdin: "" };
@@ -191,10 +193,12 @@ let listIssues = "[]";
     if (cmd[0] === "gh" && cmd[1] === "pr" && cmd[2] === "diff") out = prFiles;
     if (cmd[0] === "gh" && cmd[1] === "issue" && cmd[2] === "list") out = cmd.includes("factory:review") ? "[]" : listIssues;
     if (cmd[0] === "gh" && cmd[1] === "pr" && cmd[2] === "list") out = "[]";
+    if (cmd[0] === "gh" && cmd[1] === "label" && cmd[2] === "list") out = labelList;
     if (cmd[0] === "docker" && (cmd[1] === "ps" || cmd[1] === "network" || cmd[1] === "volume" || cmd[1] === "images")) out = "";
+    const fail = cmd[0] === "gh" && cmd[1] === "issue" && cmd[2] === "edit" && failIssueEdits > 0 && failIssueEdits-- > 0;
     return {
-      stdout: new Blob([out]).stream(), stderr: new Blob([""]).stream(), kill() {},
-      exited: (async () => { if (opts.stdin instanceof Blob) call.stdin = await opts.stdin.text(); return 0; })(),
+      stdout: new Blob([out]).stream(), stderr: new Blob([fail ? "'factory:paused' not found" : ""]).stream(), kill() {},
+      exited: (async () => { if (opts.stdin instanceof Blob) call.stdin = await opts.stdin.text(); return fail ? 1 : 0; })(),
     };
   },
 };
@@ -369,6 +373,69 @@ test("Nach zu vielen Fortsetzungen oder bei Zeitüberschreitung gilt das Limit a
 
   const t = await finishRun("build", { "claude.jsonl": result({ result: LIMIT }) }, 137, "Zeitlimit von 90 Minuten überschritten.");
   assert.equal(t.metric.status, "failed");
+});
+
+test("Schlägt GitHub bei der Auswertung fehl, zählt die erneute Auswertung desselben Containers nicht doppelt", async () => {
+  const config = cfg();
+  const dir = join(config.dataDir, "jobs", "a__b__7");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "claude.jsonl"), result({ result: LIMIT, is_error: true }));
+  const box = { name: "sf-a-b-7", repo: "a/b", issue: 7, phase: "accept" as const, mode: "new", running: false,
+    startedAt: "2026-11-25T10:20:00Z", finishedAt: "2026-11-25T10:57:00Z", exitCode: 1 };
+  const stateOf = () => JSON.parse(readFileSync(join(config.dataDir, "state", "a__b__7.json"), "utf8"));
+
+  // Erste Auswertung: Label setzen schlägt fehl, Container bleibt liegen
+  failIssueEdits = 1;
+  calls.length = 0;
+  await assert.rejects(finish(config, box));
+  assert.equal(stateOf().resume.count, 1);
+  assert.ok(!calls.some((x) => x.cmd[0] === "docker" && x.cmd[1] === "rm"));
+
+  // Weitere Auswertungen desselben Containers: gleiche Fortsetzung, GitHub-Schritte nachgeholt, aufgeräumt
+  for (let i = 0; i < 5; i++) {
+    calls.length = 0;
+    await finish(config, box);
+    assert.equal(stateOf().resume.count, 1);
+    const posted = calls.find((x) => x.cmd[1] === "issue" && x.cmd[2] === "comment")?.stdin ?? "";
+    assert.ok(posted.includes("software-factory:paused:accept") && posted.includes("Fortsetzung 1 von 5"), posted);
+    assert.ok(calls.some((x) => x.cmd[0] === "docker" && x.cmd[1] === "rm"));
+  }
+  assert.equal(readFileSync(join(config.dataDir, "metrics.jsonl"), "utf8").trim().split("\n").length, 1, "Lauf nur einmal erfasst");
+
+  // Neuer Container (Fortsetzung) zählt wieder normal weiter
+  calls.length = 0;
+  await finish(config, { ...box, mode: "resume", startedAt: "2026-11-25T13:20:00Z" });
+  assert.equal(stateOf().resume.count, 2);
+});
+
+test("Fehlschlag nach GitHub-Fehler wird beim Nachholen nicht zur Pause", async () => {
+  const config = cfg();
+  mkdirSync(join(config.dataDir, "state"), { recursive: true });
+  writeFileSync(join(config.dataDir, "state", "a__b__7.json"), JSON.stringify({ resume: { at: "2026-11-25T08:00:00Z", phase: "accept", count: 5 } }));
+  const dir = join(config.dataDir, "jobs", "a__b__7");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "claude.jsonl"), result({ result: LIMIT, is_error: true }));
+  const box = { name: "sf-a-b-7", repo: "a/b", issue: 7, phase: "accept" as const, mode: "resume", running: false,
+    startedAt: "2026-11-25T10:20:00Z", finishedAt: "2026-11-25T10:57:00Z", exitCode: 1 };
+  failIssueEdits = 1;
+  await assert.rejects(finish(config, box));
+  calls.length = 0;
+  await finish(config, box);
+  const posted = calls.find((x) => x.cmd[1] === "issue" && x.cmd[2] === "comment")?.stdin ?? "";
+  assert.ok(posted.includes("software-factory:failed:accept") && posted.includes("5-mal fortgesetzt"), posted);
+  assert.ok(calls.some((x) => x.cmd[2] === "edit" && x.cmd.includes("factory:failed")));
+});
+
+test("ensureLabels legt nur fehlende Status-Labels an", async () => {
+  const { ensureLabels } = await import("./main.ts");
+  const all = ["factory", "factory:new", "factory:checking", "factory:question", "factory:rejected", "factory:approved",
+    "factory:working", "factory:accepting", "factory:review", "factory:done", "factory:failed"];
+  labelList = JSON.stringify(all.map((name) => ({ name })));
+  calls.length = 0;
+  await ensureLabels("a/b");
+  const created = calls.filter((x) => x.cmd[1] === "label" && x.cmd[2] === "create").map((x) => x.cmd[3]);
+  assert.deepEqual(created, ["factory:paused"]);
+  labelList = "[]";
 });
 
 test("Prompt einer Fortsetzung verweist auf den vorhandenen Arbeitsstand", () => {

@@ -22,6 +22,7 @@ label "factory:accepting"      "1D76DB" "Factory: unabhängige Abnahme läuft"
 label "factory:review"         "E99695" "Factory: PR bereit, du bist dran"
 label "factory:done"           "0E8A16" "Factory: gemergt"
 label "factory:failed"         "D93F0B" "Factory: technisch hängen geblieben"
+label "factory:paused"         "C5DEF5" "Factory: Nutzungslimit erreicht, setzt nach dem Reset automatisch fort"
 # Labels aus der ersten Version entfernen
 for old in queued triage investigating implementing verifying pr waiting; do gh label delete "factory:$old" -R "$REPO" --yes >/dev/null 2>&1 || true; done
 

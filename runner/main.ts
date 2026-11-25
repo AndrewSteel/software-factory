@@ -225,8 +225,17 @@ function setLimitUntil(cfg: Config, at: Date) {
 
 // ---------- Dauerhafter Zustand pro Issue (nur für den Runner) ----------
 
-/** resume: Lauf wurde vom Nutzungslimit unterbrochen und wird ab `at` mit demselben Arbeitsstand fortgesetzt. */
-type IssueState = { lostRetries?: number; resume?: { at: string; phase: Phase; count: number } };
+/**
+ * resume: Lauf wurde vom Nutzungslimit unterbrochen und wird ab `at` mit demselben Arbeitsstand fortgesetzt.
+ * finished: zuletzt ausgewerteter Container und sein Ergebnis. Bleibt der Container liegen (z. B. GitHub-Aufruf
+ * schlug fehl), holt die nächste Auswertung nur die GitHub-Schritte nach, statt erneut zu zählen.
+ */
+type Outcome = "ended" | "paused" | "failed";
+type IssueState = {
+  lostRetries?: number;
+  resume?: { at: string; phase: Phase; count: number };
+  finished?: { container: string; outcome: Outcome; problem: string | null };
+};
 const stateFile = (cfg: Config, repo: string, n: number) => join(cfg.dataDir, "state", `${repo.replace("/", "__")}__${n}.json`);
 function getState(cfg: Config, repo: string, n: number): IssueState {
   try { return JSON.parse(readFileSync(stateFile(cfg, repo, n), "utf8")); } catch { return {}; }
@@ -246,6 +255,17 @@ async function setStage(repo: string, issue: Issue, stage: string) {
   for (const l of issue.labels) if (l.name.startsWith("factory:") && l.name !== `factory:${stage}`) args.push("--remove-label", l.name);
   await gh(args);
   issue.labels = issue.labels.filter((l) => !l.name.startsWith("factory:")).concat({ name: `factory:${stage}` });
+}
+
+/** Legt fehlende Status-Labels an (z. B. nach einem neuen Status im Runner); vorhandene bleiben unverändert. */
+async function ensureLabels(repo: string) {
+  const have = new Set((JSON.parse(await gh(["label", "list", "-R", repo, "--limit", "500", "--json", "name"])) as { name: string }[]).map((l) => l.name));
+  for (const [key, s] of Object.entries(STATUS)) {
+    const name = `factory:${key}`;
+    if (have.has(name)) continue;
+    await gh(["label", "create", name, "-R", repo, "--description", `Factory: ${s.description}`]);
+    log("labels:created", { repo, label: name });
+  }
 }
 
 async function comment(repo: string, n: number, stage: string, text: string) {
@@ -551,12 +571,61 @@ async function finish(cfg: Config, c: Container, reason?: string) {
   const errTail = redact(readJobFile(join(dir, "claude.err"), 1500) ?? "");
   // Vom Nutzungslimit unterbrochen (nicht vom Runner beendet): später mit demselben Arbeitsstand fortsetzen
   const state = getState(cfg, c.repo, c.issue);
-  const resumeAt = !ended && !reason ? limitResumeAt(`${typeof result.result === "string" ? result.result : ""}\n${errTail}`) : null;
-  const resumeCount = (state.resume?.count ?? 0) + 1;
-  const pause = resumeAt && resumeCount <= MAX_RESUMES;
-  if (resumeAt && !pause) problem = `Nutzungslimit erreicht, der Lauf wurde bereits ${MAX_RESUMES}-mal fortgesetzt.`;
-  const metricStatus = ended ? (status.status === "review" && status.unresolved ? "unresolved" : status.status) : pause ? "paused" : "failed";
+  // Derselbe Container wurde schon ausgewertet, aber nicht weggeräumt: Ergebnis übernehmen, nichts doppelt zählen
+  const key = `${c.name}@${c.startedAt}`;
+  const again = state.finished?.container === key ? state.finished : undefined;
+  let outcome: Outcome;
+  let resumeCount = state.resume?.count ?? 0;
+  let resumeAt: Date | null = null;
+  if (again) {
+    outcome = again.outcome;
+    problem = again.problem;
+    if (outcome === "paused") resumeAt = new Date(state.resume!.at);
+  } else {
+    resumeAt = !ended && !reason ? limitResumeAt(`${typeof result.result === "string" ? result.result : ""}\n${errTail}`) : null;
+    resumeCount++;
+    const pause = resumeAt && resumeCount <= MAX_RESUMES;
+    if (resumeAt && !pause) problem = `Nutzungslimit erreicht, der Lauf wurde bereits ${MAX_RESUMES}-mal fortgesetzt.`;
+    outcome = ended ? "ended" : pause ? "paused" : "failed";
+  }
+  const finished = { container: key, outcome, problem };
+  if (again) log("job:finish-retry", { repo: c.repo, issue: c.issue, phase: c.phase, outcome });
+  else recordRun(cfg, c, outcome === "ended" ? (status.status === "review" && status.unresolved ? "unresolved" : status.status!) : outcome,
+    problem, status, result, errTail);
 
+  if (outcome === "ended") {
+    setState(cfg, c.repo, c.issue, { finished });
+  } else if (outcome === "paused") {
+    if (!again) {
+      setLimitUntil(cfg, resumeAt!);
+      setState(cfg, c.repo, c.issue, { ...state, resume: { at: resumeAt!.toISOString(), phase: c.phase, count: resumeCount }, finished });
+    }
+    const issue = JSON.parse(await gh(["issue", "view", String(c.issue), "-R", c.repo, "--json", "number,title,body,url,labels,comments"]));
+    await setStage(c.repo, issue, "paused");
+    await syncBoard(cfg, issue.url, "paused");
+    const when = resumeAt!.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+    await comment(c.repo, c.issue, `paused:${c.phase}`,
+      `### ⏸️ Nutzungslimit erreicht\n\nDer Lauf wurde von Claude Codes Nutzungslimit unterbrochen. Die Factory setzt ihn **ab ${when}** automatisch fort, ` +
+      `mit derselben Claude-Session und dem bisherigen Arbeitsstand (Fortsetzung ${resumeCount} von ${MAX_RESUMES}).\n\n` +
+      `_Bis dahin startet die Factory auch für andere Issues keinen Lauf._`);
+  } else {
+    let detail = typeof result.result === "string" ? result.result.slice(-1500) : "";
+    if (!detail) detail = errTail.slice(-800);
+    detail = redact(detail).replace(/```/g, "'''").trim();
+    if (!again) setState(cfg, c.repo, c.issue, { ...state, resume: undefined, finished });
+    const issue = JSON.parse(await gh(["issue", "view", String(c.issue), "-R", c.repo, "--json", "number,title,body,url,labels,comments"]));
+    await setStage(c.repo, issue, "failed");
+    await syncBoard(cfg, issue.url, "failed");
+    await comment(c.repo, c.issue, `failed:${c.phase}`,
+      `### ⚠️ Der Lauf wurde ohne gültiges Ergebnis beendet\n\n**Grund:** ${problem}\n\n` +
+      (detail ? "Letzte Ausgabe:\n```\n" + detail + "\n```\n\n" : "") +
+      `_Schreib einen Kommentar mit einem Hinweis, dann versucht die Factory es erneut._`);
+  }
+  await docker(["rm", "-f", c.name]).catch(() => {});
+}
+
+/** Lauf in Log, runs/ und metrics.jsonl festhalten (genau einmal je Container). */
+function recordRun(cfg: Config, c: Container, metricStatus: string, problem: string | null, status: object, result: any, errTail: string) {
   log("job:finished", {
     repo: c.repo, issue: c.issue, phase: c.phase, exitCode: c.exitCode, status: metricStatus, problem,
     minutes: result.duration_ms ? Math.round(result.duration_ms / 60000) : null,
@@ -580,34 +649,6 @@ async function finish(cfg: Config, c: Container, reason?: string) {
     status: metricStatus, exitCode: c.exitCode, seconds: Number.isFinite(seconds) ? seconds : null,
     turns: result.num_turns ?? null, costUsd: result.total_cost_usd ?? null, model: cfg.model,
   }) + "\n");
-
-  if (ended) {
-    setState(cfg, c.repo, c.issue, {});
-  } else if (pause && resumeAt) {
-    setLimitUntil(cfg, resumeAt);
-    setState(cfg, c.repo, c.issue, { ...state, resume: { at: resumeAt.toISOString(), phase: c.phase, count: resumeCount } });
-    const issue = JSON.parse(await gh(["issue", "view", String(c.issue), "-R", c.repo, "--json", "number,title,body,url,labels,comments"]));
-    await setStage(c.repo, issue, "paused");
-    await syncBoard(cfg, issue.url, "paused");
-    const when = resumeAt.toISOString().replace("T", " ").slice(0, 16) + " UTC";
-    await comment(c.repo, c.issue, `paused:${c.phase}`,
-      `### ⏸️ Nutzungslimit erreicht\n\nDer Lauf wurde von Claude Codes Nutzungslimit unterbrochen. Die Factory setzt ihn **ab ${when}** automatisch fort, ` +
-      `mit derselben Claude-Session und dem bisherigen Arbeitsstand (Fortsetzung ${resumeCount} von ${MAX_RESUMES}).\n\n` +
-      `_Bis dahin startet die Factory auch für andere Issues keinen Lauf._`);
-  } else {
-    let detail = typeof result.result === "string" ? result.result.slice(-1500) : "";
-    if (!detail) detail = errTail.slice(-800);
-    detail = redact(detail).replace(/```/g, "'''").trim();
-    if (state.resume) setState(cfg, c.repo, c.issue, { ...state, resume: undefined });
-    const issue = JSON.parse(await gh(["issue", "view", String(c.issue), "-R", c.repo, "--json", "number,title,body,url,labels,comments"]));
-    await setStage(c.repo, issue, "failed");
-    await syncBoard(cfg, issue.url, "failed");
-    await comment(c.repo, c.issue, `failed:${c.phase}`,
-      `### ⚠️ Der Lauf wurde ohne gültiges Ergebnis beendet\n\n**Grund:** ${problem}\n\n` +
-      (detail ? "Letzte Ausgabe:\n```\n" + detail + "\n```\n\n" : "") +
-      `_Schreib einen Kommentar mit einem Hinweis, dann versucht die Factory es erneut._`);
-  }
-  await docker(["rm", "-f", c.name]).catch(() => {});
 }
 
 // ---------- Docker im Job (Docker-out-of-Docker) ----------
@@ -1015,6 +1056,7 @@ async function main() {
   }
   CONTAINER_UID = Number((await docker(["run", "--rm", "--entrypoint", "id", cfg.image, "-u"])).trim());
   FACTORY_LOGIN = (await gh(["api", "user", "--jq", ".login"])).trim();
+  for (const repo of cfg.repos) await ensureLabels(repo).catch((e) => log("labels:error", { repo, error: String(e) }));
   await initBoard(cfg);
   log("runner:started", {
     login: FACTORY_LOGIN, allowedUsers: cfg.allowedUsers ?? [],
@@ -1034,6 +1076,6 @@ async function main() {
   }
 }
 
-export { finish, tick, prepareDocker, syncDocker }; // für Tests
+export { finish, tick, prepareDocker, syncDocker, ensureLabels }; // für Tests
 
 if ((import.meta as any).main) main();
